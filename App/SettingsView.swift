@@ -1,25 +1,19 @@
 import SwiftUI
 
-/// The app's only window: connect a GitHub account (or a public profile) and
-/// preview what the widget will show.
+/// The app's only window: choose the GitHub username every widget shows,
+/// and preview that user's activity.
 struct SettingsView: View {
     @State private var model = AccountModel()
-    @State private var publicUsername = ""
+    @State private var draft = ""
+    @State private var isEditing = false
 
     var body: some View {
         Form {
-            switch model.state {
-            case .signedOut, .requestingCode:
-                signInSection
-                publicProfileSection
-            case .awaitingAuthorization(let code):
-                codeSection(code)
-            case .signedIn(let profile):
-                accountSection(profile, isSignedIn: true)
+            if let username = model.username, !isEditing {
+                profileSection(username)
                 activitySection
-            case .publicProfile(let login):
-                accountSection(model.calendar?.profile ?? GitHubProfile(login: login), isSignedIn: false)
-                activitySection
+            } else {
+                usernameSection
             }
 
             if let error = model.errorMessage {
@@ -32,125 +26,82 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .frame(minHeight: 500, idealHeight: 560, maxHeight: 900)
-        .animation(.snappy, value: model.state)
+        .animation(.snappy, value: model.username)
+        .animation(.snappy, value: isEditing)
         .task { await model.refreshIfStale() }
     }
 
-    // MARK: Signed out
+    // MARK: Choosing a username
 
-    private var signInSection: some View {
+    private var usernameSection: some View {
         Section {
-            VStack(spacing: 14) {
-                ContributionGrid(weeks: ContributionCalendar.sample.recentWeeks(22), highlightsToday: false)
-                    .frame(height: 70)
-                    .accessibilityHidden(true)
-
-                VStack(spacing: 6) {
+            if model.username == nil {
+                VStack(spacing: 12) {
+                    ContributionGrid(weeks: ContributionCalendar.sample.recentWeeks(22), highlightsToday: false)
+                        .frame(height: 70)
+                        .accessibilityHidden(true)
                     Text("Your GitHub activity, on your desktop")
                         .font(.title3.weight(.semibold))
-                    Text("Sign in once and the widget keeps your contribution graph up to date.")
+                    Text("Enter a GitHub username. Every GitHub Activity widget will show it.")
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                 }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 10)
+            }
 
-                Button(action: model.signIn) {
-                    if model.state == .requestingCode {
-                        ProgressView().controlSize(.small)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Text("Sign in with GitHub")
-                            .frame(maxWidth: .infinity)
+            // An instruction, not an example: a sample name in grey looked like a filled-in value.
+            TextField("GitHub username", text: $draft, prompt: Text("Enter a username"))
+                .onSubmit(save)
+
+            HStack {
+                if isEditing {
+                    Button("Cancel") {
+                        isEditing = false
                     }
+                    .keyboardShortcut(.cancelAction)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .disabled(!model.canSignIn || model.state == .requestingCode)
-
-                if !model.canSignIn {
-                    Text("Sign-in needs a GitHub OAuth Client ID in this build (GITHUB_CLIENT_ID).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
+                Spacer()
+                Button("Save", action: save)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-        }
-    }
-
-    private var publicProfileSection: some View {
-        Section {
-            TextField("Username", text: $publicUsername, prompt: Text("octocat"))
-                .onSubmit(followPublicProfile)
-            Button("Show public activity", action: followPublicProfile)
-                .disabled(publicUsername.trimmingCharacters(in: .whitespaces).isEmpty)
         } header: {
-            Text("Or follow a public profile")
+            if isEditing { Text("Change username") }
         } footer: {
-            Text("No sign-in needed. Shows public contributions only.")
+            Text("Shows public contributions. You can also set it from any widget: right-click it and choose Edit Widget.")
         }
     }
 
-    private func followPublicProfile() {
-        Task { await model.usePublicProfile(publicUsername) }
+    private func save() {
+        guard model.setUsername(draft) else { return }
+        isEditing = false
+        Task { await model.refresh() }
     }
 
-    // MARK: Waiting for GitHub
+    // MARK: Showing a username
 
-    private func codeSection(_ code: DeviceFlowSignIn.Code) -> some View {
-        Section {
-            VStack(spacing: 14) {
-                Text("Enter this code on GitHub")
-                    .font(.headline)
-
-                Text(code.userCode)
-                    .font(.system(size: 34, weight: .semibold, design: .monospaced))
-                    .kerning(3)
-                    .textSelection(.enabled)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 8)
-                    .background(.quaternary, in: .rect(cornerRadius: 10))
-
-                Text("It's on your clipboard, and GitHub is open in your browser.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-
-                HStack {
-                    Button("Copy code", systemImage: "doc.on.doc", action: model.copyCode)
-                    Button("Open GitHub", systemImage: "safari", action: model.openVerificationPage)
-                        .buttonStyle(.borderedProminent)
-                }
-
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("Waiting for you to authorize…")
-                        .foregroundStyle(.secondary)
-                }
-                .font(.callout)
-
-                Button("Cancel", action: model.cancelSignIn)
-                    .buttonStyle(.link)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
-        }
-    }
-
-    // MARK: Connected
-
-    private func accountSection(_ profile: GitHubProfile, isSignedIn: Bool) -> some View {
-        Section {
+    private func profileSection(_ username: String) -> some View {
+        let profile = model.calendar?.profile ?? GitHubProfile(login: username)
+        return Section {
             HStack(spacing: 12) {
                 Avatar(profile: profile, size: 44)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(profile.name.flatMap { $0.isEmpty ? nil : $0 } ?? "@\(profile.login)")
+                    let name = profile.name.flatMap { $0.isEmpty ? nil : $0 }
+                    Text(name ?? "@\(profile.login)")
                         .font(.headline)
-                    Text(isSignedIn ? "@\(profile.login) · Signed in with GitHub" : "@\(profile.login) · Public profile")
+                    // Public profiles have no display name; don't repeat the login twice.
+                    Text(name == nil ? "Shown on all your widgets" : "@\(profile.login) · Shown on all your widgets")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button(isSignedIn ? "Sign out" : "Change", action: model.signOut)
+                Button("Change") {
+                    // Start from the current name so it can be edited, not retyped.
+                    draft = username
+                    isEditing = true
+                }
             }
         }
     }
@@ -176,7 +127,12 @@ struct SettingsView: View {
             } else if model.isRefreshing {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
-                    Text("Loading your contributions…").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Loading contributions…")
+                        Text("GitHub can take up to a minute the first time.")
+                            .font(.caption)
+                    }
+                    .foregroundStyle(.secondary)
                 }
             } else {
                 Text("No contributions loaded yet.").foregroundStyle(.secondary)

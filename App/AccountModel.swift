@@ -1,153 +1,85 @@
-import AppKit
 import Observation
 import WidgetKit
 
-/// Drives the settings window: signing in with GitHub, or following a public
-/// profile without signing in, and refreshing the widget afterwards.
+/// Drives the settings window: the one GitHub username every widget shows,
+/// and that user's latest contributions.
+///
+/// Sign in with GitHub (`DeviceFlowSignIn`) is kept in the project but not offered
+/// for now: public contributions only need a username.
 @MainActor
 @Observable
 final class AccountModel {
-    enum State: Equatable {
-        case signedOut
-        case requestingCode
-        case awaitingAuthorization(DeviceFlowSignIn.Code)
-        /// Signed in with GitHub: exact counts from the API.
-        case signedIn(GitHubProfile)
-        /// No sign-in: public contributions for any username.
-        case publicProfile(String)
-    }
-
-    private(set) var state: State
+    /// The shared username, or `nil` until someone enters one here or in a widget.
+    private(set) var username: String?
     private(set) var calendar: ContributionCalendar?
     private(set) var isRefreshing = false
     /// The last problem worth showing, cleared when something succeeds.
     private(set) var errorMessage: String?
 
-    let canSignIn: Bool
-
     private let store: ContributionStore
-    private let clientID: String?
-    private var signInTask: Task<Void, Never>?
+    private let service: GitHubService
+    /// Bumped by every refresh and username change, so a slow load that finishes
+    /// after you've moved on is thrown away instead of overwriting the screen.
+    private var refreshGeneration = 0
 
-    init(store: ContributionStore = .shared, clientID: String? = DeviceFlowSignIn.configuredClientID) {
+    init(store: ContributionStore = .shared, service: GitHubService = GitHubService()) {
         self.store = store
-        self.clientID = clientID
-        self.canSignIn = clientID != nil
+        self.service = service
+        self.username = store.username
         self.calendar = store.cachedCalendar
-
-        if store.token != nil, let account = store.account ?? store.username.map({ GitHubProfile(login: $0) }) {
-            state = .signedIn(account)
-        } else if let username = store.username {
-            state = .publicProfile(username)
-        } else {
-            state = .signedOut
-        }
     }
 
-    // MARK: Sign in with GitHub
-
-    func signIn() {
-        guard let clientID else {
-            errorMessage = DeviceFlowSignIn.Failure.notConfigured.localizedDescription
-            return
-        }
-        signInTask?.cancel()
-        errorMessage = nil
-        state = .requestingCode
-
-        signInTask = Task {
-            let flow = DeviceFlowSignIn(clientID: clientID)
-            do {
-                let code = try await flow.requestCode()
-                state = .awaitingAuthorization(code)
-                copyToPasteboard(code.userCode)
-                NSWorkspace.shared.open(code.verificationURL)
-
-                let token = try await flow.waitForToken(code)
-                let profile = try await GitHubService().fetchViewer(token: token)
-                try store.setToken(token)
-                store.account = profile
-                store.username = profile.login
-                state = .signedIn(profile)
-                await refresh()
-            } catch {
-                // A cancelled attempt must not touch the state: a newer one may be running.
-                guard !Task.isCancelled else { return }
-                state = .signedOut
-                errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    func cancelSignIn() {
-        signInTask?.cancel()
-        signInTask = nil
-        state = .signedOut
-    }
-
-    func copyCode() {
-        if case .awaitingAuthorization(let code) = state { copyToPasteboard(code.userCode) }
-    }
-
-    func openVerificationPage() {
-        if case .awaitingAuthorization(let code) = state { NSWorkspace.shared.open(code.verificationURL) }
-    }
-
-    func signOut() {
-        signInTask?.cancel()
-        store.signOut()
-        calendar = nil
-        errorMessage = nil
-        state = .signedOut
-        WidgetCenter.shared.reloadAllTimelines()
-    }
-
-    // MARK: Public profile (no sign-in)
-
-    /// Follows `input`'s public contributions, or explains why the username can't be used.
-    func usePublicProfile(_ input: String) async {
+    /// Saves `input` as the username for the app and every widget.
+    /// Returns `false` (and sets `errorMessage`) if it can't be used.
+    @discardableResult
+    func setUsername(_ input: String) -> Bool {
         let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             errorMessage = "Enter a GitHub username."
-            return
+            return false
         }
         guard let login = GitHubService.normalizedLogin(trimmed) else {
             errorMessage = GitHubError.invalidUsername.localizedDescription
-            return
+            return false
         }
-        store.signOut()
+
+        refreshGeneration += 1
+        isRefreshing = false
         store.username = login
-        calendar = nil
-        state = .publicProfile(login)
-        await refresh()
+        username = login
+        calendar = store.cachedCalendar(for: login)
+        errorMessage = nil
+        WidgetCenter.shared.reloadAllTimelines()
+        return true
     }
 
     // MARK: Refresh
 
     /// Refreshes when the window opens if the data is missing or older than ten minutes.
     func refreshIfStale() async {
-        switch state {
-        case .signedIn, .publicProfile:
-            if let calendar, calendar.fetchedAt.timeIntervalSinceNow > -600 { return }
-            await refresh()
-        default:
-            return
+        // A widget may have changed the username while the app was closed.
+        if let saved = store.username, saved != username {
+            username = saved
+            calendar = store.cachedCalendar(for: saved)
         }
+        if let calendar, calendar.fetchedAt.timeIntervalSinceNow > -600 { return }
+        await refresh()
     }
 
     func refresh() async {
-        guard !isRefreshing else { return }
-        isRefreshing = true
-        defer { isRefreshing = false }
+        guard let login = username else { return }
 
-        let result = await store.loadCalendar()
+        refreshGeneration += 1
+        let generation = refreshGeneration
+        isRefreshing = true
+
+        let result = await store.loadCalendar(username: login, using: service)
+
+        // The username changed or another refresh started while this was loading.
+        guard generation == refreshGeneration else { return }
+        isRefreshing = false
         if let fresh = result.calendar { calendar = fresh }
         errorMessage = result.error?.localizedDescription
         WidgetCenter.shared.reloadAllTimelines()
-    }
-
-    private func copyToPasteboard(_ string: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(string, forType: .string)
     }
 }
