@@ -309,3 +309,96 @@ struct StoreTests {
         #expect(result.calendar == nil)
     }
 }
+
+// MARK: - Retries
+
+/// Fails the first N requests with a chosen error, then serves the contributions page.
+private final class FlakyNetwork: URLProtocol {
+    struct Script {
+        var failures: Int
+        var error: URLError.Code?
+        var status = 200
+        var attempts = 0
+    }
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var script = Script(failures: 0, error: nil)
+
+    static func reset(_ newScript: Script) { lock.withLock { script = newScript } }
+    static var attempts: Int { lock.withLock { script.attempts } }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+
+    override func startLoading() {
+        let (attempt, current) = Self.lock.withLock {
+            Self.script.attempts += 1
+            return (Self.script.attempts, Self.script)
+        }
+        if attempt <= current.failures {
+            if let code = current.error {
+                client?.urlProtocol(self, didFailWithError: URLError(code))
+                return
+            }
+            respond(status: current.status, body: "")
+            return
+        }
+        respond(status: 200, body: contributionsPageFixture)
+    }
+
+    private func respond(status: Int, body: String) {
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(body.utf8))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    static func service() -> GitHubService {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [FlakyNetwork.self]
+        return GitHubService(session: URLSession(configuration: configuration), retryDelays: [.milliseconds(1), .milliseconds(1)])
+    }
+}
+
+@Suite(.serialized)
+struct RetryTests {
+    @Test func survivesATLSResetLikeWARPs() async throws {
+        // The failure from the bug report: ECONNRESET mid-handshake → NSURLErrorDomain -1200.
+        FlakyNetwork.reset(.init(failures: 1, error: .secureConnectionFailed))
+        let calendar = try await FlakyNetwork.service().fetchCalendar(username: "sharvesh300", token: nil)
+        #expect(calendar.totalContributions == 1302)
+        #expect(FlakyNetwork.attempts == 2)
+    }
+
+    @Test func retriesGitHubEdgeErrors() async throws {
+        FlakyNetwork.reset(.init(failures: 2, error: nil, status: 502))
+        _ = try await FlakyNetwork.service().fetchCalendar(username: "sharvesh300", token: nil)
+        #expect(FlakyNetwork.attempts == 3)
+    }
+
+    @Test func givesUpAfterTwoRetriesWithAPlainMessage() async {
+        FlakyNetwork.reset(.init(failures: 10, error: .networkConnectionLost))
+        await #expect(throws: GitHubError.network("The connection kept dropping. A VPN or firewall may be interrupting it.")) {
+            try await FlakyNetwork.service().fetchCalendar(username: "sharvesh300", token: nil)
+        }
+        #expect(FlakyNetwork.attempts == 3)
+    }
+
+    @Test(arguments: [URLError.Code.notConnectedToInternet, .timedOut])
+    func doesNotRetryWhenItWouldNotHelp(code: URLError.Code) async {
+        FlakyNetwork.reset(.init(failures: 10, error: code))
+        await #expect(throws: GitHubError.self) {
+            try await FlakyNetwork.service().fetchCalendar(username: "sharvesh300", token: nil)
+        }
+        #expect(FlakyNetwork.attempts == 1)
+    }
+
+    @Test func notFoundIsNotRetried() async {
+        FlakyNetwork.reset(.init(failures: 10, error: nil, status: 404))
+        await #expect(throws: GitHubError.userNotFound("sharvesh300")) {
+            try await FlakyNetwork.service().fetchCalendar(username: "sharvesh300", token: nil)
+        }
+        #expect(FlakyNetwork.attempts == 1)
+    }
+}

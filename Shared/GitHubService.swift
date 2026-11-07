@@ -27,6 +27,9 @@ enum GitHubError: LocalizedError, Equatable, Sendable {
 /// HTML github.com renders on a profile.
 struct GitHubService: Sendable {
     var session: URLSession = .shared
+    /// Waits before each retry of a brief network failure. Two retries by default:
+    /// VPN tunnels (Cloudflare WARP, for one) sometimes reset a connection mid-handshake.
+    var retryDelays: [Duration] = [.seconds(1), .seconds(3)]
 
     func fetchCalendar(username: String, token: String?) async throws -> ContributionCalendar {
         guard let login = Self.normalizedLogin(username) else { throw GitHubError.invalidUsername }
@@ -233,20 +236,73 @@ struct GitHubService: Sendable {
     private func perform(_ request: URLRequest, login: String) async throws -> Data {
         var request = request
         request.setValue("GitHubActivityWidget/1.0", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 20
+        // GitHub's contributions page can take 40s+ on a cold request; 20s timed out.
+        request.timeoutInterval = 60
 
+        var attempt = 0
+        while true {
+            do {
+                return try await performOnce(request, login: login)
+            } catch let failure as RetryableFailure {
+                guard attempt < retryDelays.count else { throw failure.error }
+                try await Task.sleep(for: retryDelays[attempt])
+                attempt += 1
+            }
+        }
+    }
+
+    /// A failure worth trying again, carrying the error to show if retries run out.
+    private struct RetryableFailure: Error {
+        let error: GitHubError
+    }
+
+    private func performOnce(_ request: URLRequest, login: String) async throws -> Data {
         let data: Data
         let response: URLResponse
         do {
             (data, response) = try await session.data(for: request)
+        } catch let error as URLError {
+            let gitHubError = GitHubError.network(Self.message(for: error))
+            if Self.isTransient(error) { throw RetryableFailure(error: gitHubError) }
+            throw gitHubError
         } catch {
             throw GitHubError.network(error.localizedDescription)
         }
         guard let http = response as? HTTPURLResponse else { throw GitHubError.unexpectedResponse }
         if let error = Self.error(forStatus: http.statusCode, login: login, remainingRateLimit: http.value(forHTTPHeaderField: "x-ratelimit-remaining")) {
+            // GitHub's edge occasionally answers 502/503/504; those pass quickly.
+            if [502, 503, 504].contains(http.statusCode) { throw RetryableFailure(error: error) }
             throw error
         }
         return data
+    }
+
+    /// Dropped or refused connections that usually work a moment later.
+    /// Timeouts aren't retried: the request already waited a full minute.
+    static func isTransient(_ error: URLError) -> Bool {
+        switch error.code {
+        case .secureConnectionFailed, .networkConnectionLost, .cannotConnectToHost,
+             .cannotFindHost, .dnsLookupFailed:
+            true
+        default:
+            false
+        }
+    }
+
+    /// What to tell people instead of URLSession's technical wording.
+    static func message(for error: URLError) -> String {
+        switch error.code {
+        case .notConnectedToInternet:
+            "You're offline."
+        case .timedOut:
+            "GitHub took too long to respond."
+        case .secureConnectionFailed, .networkConnectionLost:
+            "The connection kept dropping. A VPN or firewall may be interrupting it."
+        case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost:
+            "Check your internet connection or VPN."
+        default:
+            error.localizedDescription
+        }
     }
 
     /// Maps an HTTP status to the error the user should see, or `nil` for success.
