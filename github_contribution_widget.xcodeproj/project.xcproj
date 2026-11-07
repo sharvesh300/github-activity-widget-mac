@@ -47,6 +47,7 @@
       "build-settings": {
         "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME": "AccentColor",
         "CODE_SIGN_ENTITLEMENTS": "Config/App.entitlements",
+        "GITHUB_CLIENT_ID": "",
         "INFOPLIST_FILE": "Config/App-Info.plist",
         "INFOPLIST_KEY_CFBundleDisplayName": "GitHub Activity",
         "INFOPLIST_KEY_LSApplicationCategoryType": "public.app-category.developer-tools",

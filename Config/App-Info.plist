@@ -4,5 +4,7 @@
 <dict>
 	<key>AppGroupIdentifier</key>
 	<string>$(APP_GROUP_IDENTIFIER)</string>
+	<key>GitHubClientID</key>
+	<string>$(GITHUB_CLIENT_ID)</string>
 </dict>
 </plist>
