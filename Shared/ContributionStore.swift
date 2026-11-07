@@ -18,6 +18,7 @@ struct ContributionStore: @unchecked Sendable {
     private enum Key {
         static let username = "username"
         static let account = "signedInAccount"
+        static let widgetUsernameInputs = "widgetUsernameInputs"
         static let calendarPrefix = "calendar."
         static let avatarPrefix = "avatar."
 
@@ -83,6 +84,37 @@ struct ContributionStore: @unchecked Sendable {
                 defaults.removeObject(forKey: Key.account)
             }
         }
+    }
+
+    // MARK: One username for every widget
+
+    /// Applies a username someone just typed into a widget's Edit Widget panel,
+    /// so every widget (and the app) shows that person from now on.
+    ///
+    /// Each widget keeps its own typed value and WidgetKit can't tell us which widget
+    /// is which, so we remember how many widgets carry each value. A value whose count
+    /// went up was just entered and becomes the username; values we've already seen
+    /// are left alone, so an old entry in another widget never switches it back.
+    ///
+    /// - Parameter inputs: the username field of every configured widget (empty ones left out).
+    /// - Returns: `true` if the shared username changed.
+    @discardableResult
+    func adoptUsername(fromWidgetInputs inputs: [String]) -> Bool {
+        var current: [String: Int] = [:]
+        for login in inputs.compactMap(GitHubService.normalizedLogin) {
+            current[login.lowercased(), default: 0] += 1
+        }
+        let previous = defaults.dictionary(forKey: Key.widgetUsernameInputs) as? [String: Int] ?? [:]
+        defaults.set(current, forKey: Key.widgetUsernameInputs)
+
+        let justEntered = current.filter { $0.value > previous[$0.key, default: 0] }.keys
+        guard !justEntered.isEmpty else { return false }
+        // Several at once (e.g. the first run with many widgets): keep the current
+        // username if it's one of them, otherwise pick one predictably.
+        if let username, justEntered.contains(username.lowercased()) { return false }
+        guard let chosen = justEntered.sorted().first else { return false }
+        username = chosen
+        return true
     }
 
     /// Forgets the account, token, username and cached data.

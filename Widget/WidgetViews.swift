@@ -37,14 +37,14 @@ struct WidgetLayout: View {
             }
             .widgetURL(calendar.profile.profileURL)
 
-        case .notConnected:
+        case .needsUsername:
             MessageView(
                 symbol: "person.crop.circle.badge.plus",
-                title: "Connect GitHub",
+                title: "Add your GitHub username",
                 message: family == .systemSmall
-                    ? "Open GitHub Activity to sign in."
-                    : "Open GitHub Activity to sign in, or edit this widget and enter a username.",
-                refreshLogin: nil
+                    ? "Right-click and choose Edit Widget."
+                    : "Right-click this widget and choose Edit Widget. Every GitHub Activity widget will use it.",
+                showsRefresh: false
             )
 
         case .failed(let error):
@@ -52,7 +52,7 @@ struct WidgetLayout: View {
                 symbol: "exclamationmark.triangle",
                 title: "Can't load contributions",
                 message: error.localizedDescription,
-                refreshLogin: entry.configuredLogin ?? ""
+                showsRefresh: true
             )
         }
     }
@@ -65,8 +65,6 @@ struct LayoutContext {
     let error: GitHubError?
     let avatar: Data?
     let theme: ContributionTheme
-    /// `nil` refreshes the app's account; a value refreshes that user.
-    let refreshLogin: String?
 
     init(calendar: ContributionCalendar, error: GitHubError?, entry: ContributionEntry) {
         self.calendar = calendar
@@ -74,7 +72,6 @@ struct LayoutContext {
         self.error = error
         self.avatar = entry.avatar
         self.theme = entry.theme
-        self.refreshLogin = entry.configuredLogin
     }
 
     var profile: GitHubProfile { calendar.profile }
@@ -228,11 +225,17 @@ private struct WidgetHeader: View {
             AvatarImage(data: context.avatar, login: context.profile.login, size: showsName ? 28 : 18)
             if showsName {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(displayName)
-                        .font(.system(size: 13, weight: .semibold))
-                    Text("@\(context.profile.login)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                    // Public profiles have no display name; don't repeat the login twice.
+                    if let name = displayName {
+                        Text(name)
+                            .font(.system(size: 13, weight: .semibold))
+                        Text("@\(context.profile.login)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Text("@\(context.profile.login)")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
                 }
                 .lineLimit(1)
             } else {
@@ -243,12 +246,12 @@ private struct WidgetHeader: View {
             }
             Spacer(minLength: 4)
             if context.error != nil, !showsName { OfflineBadge() }
-            RefreshButton(login: context.refreshLogin)
+            RefreshButton()
         }
     }
 
-    private var displayName: String {
-        guard let name = context.profile.name, !name.isEmpty else { return context.profile.login }
+    private var displayName: String? {
+        guard let name = context.profile.name, !name.isEmpty else { return nil }
         return name
     }
 }
@@ -370,11 +373,8 @@ private struct OfflineBadge: View {
 }
 
 private struct RefreshButton: View {
-    /// `nil` refreshes the app's account.
-    let login: String?
-
     var body: some View {
-        Button(intent: RefreshContributionsIntent(username: login)) {
+        Button(intent: RefreshContributionsIntent()) {
             Image(systemName: "arrow.clockwise")
                 .font(.system(size: 11, weight: .semibold))
                 .foregroundStyle(.secondary)
@@ -418,8 +418,7 @@ private struct MessageView: View {
     let symbol: String
     let title: String
     let message: String
-    /// `nil` hides the refresh button; a value (even empty) shows it.
-    let refreshLogin: String?
+    let showsRefresh: Bool
 
     var body: some View {
         VStack(spacing: 6) {
@@ -428,13 +427,14 @@ private struct MessageView: View {
                 .foregroundStyle(.secondary)
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
+                .multilineTextAlignment(.center)
             Text(message)
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .lineLimit(4)
-            if let refreshLogin {
-                Button(intent: RefreshContributionsIntent(username: refreshLogin.isEmpty ? nil : refreshLogin)) {
+            if showsRefresh {
+                Button(intent: RefreshContributionsIntent()) {
                     Label("Try again", systemImage: "arrow.clockwise")
                         .font(.system(size: 11, weight: .medium))
                 }

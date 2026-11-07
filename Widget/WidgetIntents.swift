@@ -9,9 +9,12 @@ struct ContributionWidgetIntent: WidgetConfigurationIntent {
     @Parameter(title: "Theme", default: .github)
     var theme: ContributionTheme
 
-    /// Empty means "whoever is connected in the app". Setting it lets one widget
-    /// follow someone else, and keeps widgets working without a shared App Group.
-    @Parameter(title: "GitHub username", description: "Leave empty to use the account connected in the app.")
+    /// Typing a username here sets it for every GitHub Activity widget (and the app),
+    /// and it's remembered until someone enters a different one.
+    @Parameter(
+        title: "GitHub username",
+        description: "Used by all your GitHub Activity widgets until you enter a different one."
+    )
     var username: String?
 
     init() {}
@@ -21,29 +24,22 @@ struct ContributionWidgetIntent: WidgetConfigurationIntent {
         self.username = username
     }
 
-    /// The username to show, if one was typed and it's valid.
-    var overrideLogin: String? {
+    /// The username typed into this widget, if any and if it's valid.
+    var enteredLogin: String? {
         username.flatMap(GitHubService.normalizedLogin)
     }
 }
 
-/// The ↻ button on the widget. Fetches fresh data; WidgetKit then reloads the
-/// timeline, which reuses what this just cached instead of fetching twice.
+/// The ↻ button on the widget. Fetches fresh data for the shared username;
+/// WidgetKit then reloads the timeline, which reuses what this just cached.
 struct RefreshContributionsIntent: AppIntent {
     static let title: LocalizedStringResource = "Refresh Contributions"
     static let isDiscoverable = false
 
-    @Parameter(title: "GitHub username")
-    var username: String?
-
     init() {}
 
-    init(username: String?) {
-        self.username = username
-    }
-
     func perform() async throws -> some IntentResult {
-        _ = await ContributionStore.shared.loadCalendar(username: username)
+        _ = await ContributionStore.shared.loadCalendar()
         return .result()
     }
 }
