@@ -18,6 +18,7 @@ struct ContributionStore: @unchecked Sendable {
     private enum Key {
         static let username = "username"
         static let cachedCalendar = "cachedCalendar"
+        static let account = "signedInAccount"
     }
 
     static let shared = ContributionStore()
@@ -64,6 +65,28 @@ struct ContributionStore: @unchecked Sendable {
         } else {
             try keychain.save(trimmed)
         }
+    }
+
+    /// The GitHub account the saved token belongs to, or `nil` when not signed in.
+    var account: GitHubProfile? {
+        get {
+            defaults.data(forKey: Key.account).flatMap { try? JSONDecoder().decode(GitHubProfile.self, from: $0) }
+        }
+        nonmutating set {
+            if let newValue, let data = try? JSONEncoder().encode(newValue) {
+                defaults.set(data, forKey: Key.account)
+            } else {
+                defaults.removeObject(forKey: Key.account)
+            }
+        }
+    }
+
+    /// Forgets the account, token, username and cached data.
+    func signOut() {
+        keychain.delete()
+        account = nil
+        username = nil
+        clearCache()
     }
 
     // MARK: Cache

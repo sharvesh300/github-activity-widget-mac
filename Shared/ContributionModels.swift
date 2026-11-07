@@ -113,6 +113,9 @@ struct GitHubProfile: Hashable, Codable, Sendable {
     var avatarURL: URL?
 
     var profileURL: URL { URL(string: "https://github.com/\(login)")! }
+
+    /// The API's avatar when we have it; otherwise GitHub's public `<login>.png` redirect.
+    var avatarImageURL: URL { avatarURL ?? URL(string: "https://github.com/\(login).png?size=128")! }
 }
 
 /// One year of contributions for a user, oldest day first.

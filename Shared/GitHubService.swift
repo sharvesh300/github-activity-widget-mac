@@ -12,7 +12,7 @@ enum GitHubError: LocalizedError, Equatable, Sendable {
         switch self {
         case .invalidUsername: "That doesn't look like a GitHub username."
         case .userNotFound(let login): "No GitHub user named @\(login)."
-        case .invalidToken: "GitHub rejected the token. Check it hasn't expired."
+        case .invalidToken: "Your GitHub sign-in is no longer valid. Open GitHub Activity to sign in again."
         case .rateLimited: "GitHub is rate-limiting requests. It'll retry shortly."
         case .network(let message): "Couldn't reach GitHub. \(message)"
         case .unexpectedResponse: "GitHub sent something unexpected. Try again later."
@@ -119,6 +119,35 @@ struct GitHubService: Sendable {
             fetchedAt: fetchedAt,
             source: .graphQL
         )
+    }
+
+    /// The account a token belongs to, used right after sign-in to fill in the username.
+    func fetchViewer(token: String) async throws -> GitHubProfile {
+        var request = URLRequest(url: URL(string: "https://api.github.com/graphql")!)
+        request.httpMethod = "POST"
+        request.setValue("bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "query": "query { viewer { login name avatarUrl(size: 128) } }",
+        ])
+        let data = try await perform(request, login: "you")
+        return try Self.parseViewer(data)
+    }
+
+    static func parseViewer(_ data: Data) throws -> GitHubProfile {
+        struct Response: Decodable {
+            struct Payload: Decodable { let viewer: Viewer }
+            struct Viewer: Decodable {
+                let login: String
+                let name: String?
+                let avatarUrl: URL?
+            }
+            let data: Payload?
+        }
+        guard let viewer = (try? JSONDecoder().decode(Response.self, from: data))?.data?.viewer else {
+            throw GitHubError.unexpectedResponse
+        }
+        return GitHubProfile(login: viewer.login, name: viewer.name, avatarURL: viewer.avatarUrl)
     }
 
     private struct GraphQLResponse: Decodable {
