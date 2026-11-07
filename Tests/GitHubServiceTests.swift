@@ -250,14 +250,57 @@ struct StoreTests {
 
     @Test func cacheRoundTrips() throws {
         let store = makeStore()
+        store.username = "sharvesh300"
         let calendar = try GitHubService.parseGraphQL(graphQLFixture, login: "sharvesh300", fetchedAt: Date(timeIntervalSince1970: 1_000))
         #expect(store.cachedCalendar == nil)
 
         store.cache(calendar)
         #expect(store.cachedCalendar == calendar)
+        #expect(store.cachedCalendar(for: "SHARVESH300") == calendar)
 
         store.clearCache()
         #expect(store.cachedCalendar == nil)
+    }
+
+    @Test func cachesEachUserSeparately() throws {
+        let store = makeStore()
+        store.username = "sharvesh300"
+        let mine = try GitHubService.parseGraphQL(graphQLFixture, login: "sharvesh300", fetchedAt: .now)
+        var theirs = mine
+        theirs.profile = GitHubProfile(login: "octocat")
+
+        store.cache(mine)
+        store.cache(theirs)
+
+        #expect(store.cachedCalendar?.profile.login == "sharvesh300")
+        #expect(store.cachedCalendar(for: "octocat")?.profile.login == "octocat")
+    }
+
+    @Test func reusesAFreshCacheWithoutTheNetwork() async throws {
+        let store = makeStore()
+        let calendar = try GitHubService.parseGraphQL(graphQLFixture, login: "sharvesh300", fetchedAt: .now)
+        store.cache(calendar)
+
+        // A session that fails every request proves the cache answered.
+        let offline = URLSession(configuration: {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.connectionProxyDictionary = ["HTTPSEnable": 1, "HTTPSProxy": "127.0.0.1", "HTTPSPort": 9]
+            return configuration
+        }())
+        let result = await store.loadCalendar(username: "sharvesh300", reuseIfNewerThan: 60, using: GitHubService(session: offline))
+
+        guard case .fresh(let reused) = result else {
+            Issue.record("Expected the cached calendar, got \(result)")
+            return
+        }
+        #expect(reused == calendar)
+    }
+
+    @Test func avatarsExpire() {
+        let store = makeStore()
+        store.cacheAvatar(Data([1, 2, 3]), for: "Sharvesh300")
+        #expect(store.cachedAvatar(for: "sharvesh300") == Data([1, 2, 3]))
+        #expect(store.cachedAvatar(for: "sharvesh300", maxAge: -1) == nil)
     }
 
     @Test func loadWithoutUsernameFails() async {

@@ -17,8 +17,12 @@ struct ContributionStore: @unchecked Sendable {
 
     private enum Key {
         static let username = "username"
-        static let cachedCalendar = "cachedCalendar"
         static let account = "signedInAccount"
+        static let calendarPrefix = "calendar."
+        static let avatarPrefix = "avatar."
+
+        static func calendar(_ login: String) -> String { calendarPrefix + login.lowercased() }
+        static func avatar(_ login: String) -> String { avatarPrefix + login.lowercased() }
     }
 
     static let shared = ContributionStore()
@@ -91,18 +95,50 @@ struct ContributionStore: @unchecked Sendable {
 
     // MARK: Cache
 
+    /// The last good calendar for the saved username.
     var cachedCalendar: ContributionCalendar? {
-        guard let data = defaults.data(forKey: Key.cachedCalendar) else { return nil }
+        username.flatMap(cachedCalendar(for:))
+    }
+
+    /// The last good calendar for `login`. Kept per user, so a widget set to
+    /// someone else doesn't overwrite the app's own copy.
+    func cachedCalendar(for login: String) -> ContributionCalendar? {
+        guard let data = defaults.data(forKey: Key.calendar(login)) else { return nil }
         return try? JSONDecoder().decode(ContributionCalendar.self, from: data)
     }
 
     func cache(_ calendar: ContributionCalendar) {
         guard let data = try? JSONEncoder().encode(calendar) else { return }
-        defaults.set(data, forKey: Key.cachedCalendar)
+        defaults.set(data, forKey: Key.calendar(calendar.profile.login))
     }
 
+    /// Removes every cached calendar and avatar.
     func clearCache() {
-        defaults.removeObject(forKey: Key.cachedCalendar)
+        for key in defaults.dictionaryRepresentation().keys
+        where key.hasPrefix(Key.calendarPrefix) || key.hasPrefix(Key.avatarPrefix) {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    // MARK: Avatars
+
+    private struct CachedAvatar: Codable {
+        let data: Data
+        let fetchedAt: Date
+    }
+
+    /// The avatar's image data, if it was downloaded within the last week.
+    func cachedAvatar(for login: String, maxAge: TimeInterval = 7 * 24 * 3600) -> Data? {
+        guard let stored = defaults.data(forKey: Key.avatar(login)),
+              let avatar = try? JSONDecoder().decode(CachedAvatar.self, from: stored),
+              -avatar.fetchedAt.timeIntervalSinceNow < maxAge
+        else { return nil }
+        return avatar.data
+    }
+
+    func cacheAvatar(_ data: Data, for login: String) {
+        guard let encoded = try? JSONEncoder().encode(CachedAvatar(data: data, fetchedAt: .now)) else { return }
+        defaults.set(encoded, forKey: Key.avatar(login))
     }
 
     // MARK: Loading
@@ -129,11 +165,22 @@ struct ContributionStore: @unchecked Sendable {
         }
     }
 
-    /// Fetches the saved user's calendar, caching it on success and falling back
-    /// to the cache on failure, so the widget never goes blank when offline.
-    func loadCalendar(username: String? = nil, using service: GitHubService = GitHubService()) async -> LoadResult {
+    /// Fetches a calendar (the saved user's unless `username` is given), caching it
+    /// on success and falling back to the cache on failure, so the widget never goes
+    /// blank when offline.
+    ///
+    /// - Parameter reuseIfNewerThan: skip the network when the cached copy is at
+    ///   least this fresh (seconds), e.g. right after the refresh button fetched it.
+    func loadCalendar(
+        username: String? = nil,
+        reuseIfNewerThan maxAge: TimeInterval = 0,
+        using service: GitHubService = GitHubService()
+    ) async -> LoadResult {
         guard let login = (username ?? self.username).flatMap(GitHubService.normalizedLogin) else {
             return .failed(.invalidUsername)
+        }
+        if maxAge > 0, let cached = cachedCalendar(for: login), -cached.fetchedAt.timeIntervalSinceNow < maxAge {
+            return .fresh(cached)
         }
         do {
             let calendar = try await service.fetchCalendar(username: login, token: token)
@@ -141,7 +188,7 @@ struct ContributionStore: @unchecked Sendable {
             return .fresh(calendar)
         } catch {
             let gitHubError = error as? GitHubError ?? .network(error.localizedDescription)
-            if let cached = cachedCalendar, cached.profile.login.caseInsensitiveCompare(login) == .orderedSame {
+            if let cached = cachedCalendar(for: login) {
                 return .cached(cached, gitHubError)
             }
             return .failed(gitHubError)
