@@ -37,6 +37,16 @@ struct GridMetricsTests {
         #expect(abs(metrics.cellSize - 10) < 0.001)
     }
 
+    @Test func minimumColumnsShrinksCellsToShowTheWholeYear() {
+        let roomy = CGSize(width: 708, height: 300)
+        #expect(GridMetrics(available: roomy, weekCount: 53).columns < 53)
+
+        let fullYear = GridMetrics(available: roomy, weekCount: 53, minimumColumns: 53)
+        #expect(fullYear.columns == 53)
+        #expect(fullYear.gridSize.width <= roomy.width + 0.001)
+        #expect(GridMetrics(available: roomy, weekCount: 20, minimumColumns: 53).columns == 20)
+    }
+
     @Test func respectsMaximumCellSize() {
         let metrics = GridMetrics(available: CGSize(width: 800, height: 800), weekCount: 53, maxCellSize: 12)
         #expect(metrics.cellSize == 12)

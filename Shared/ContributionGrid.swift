@@ -15,7 +15,15 @@ struct GridMetrics: Equatable {
     var cellSize: CGFloat
     var gap: CGFloat
 
-    init(available: CGSize, weekCount: Int, gapRatio: CGFloat = 0.22, maxCellSize: CGFloat = .infinity) {
+    /// - Parameter minimumColumns: show at least this many weeks (when there are
+    ///   that many), shrinking cells to fit instead of filling the height.
+    init(
+        available: CGSize,
+        weekCount: Int,
+        gapRatio: CGFloat = 0.22,
+        maxCellSize: CGFloat = .infinity,
+        minimumColumns: Int = 0
+    ) {
         guard weekCount > 0, available.width > 0, available.height > 0 else {
             self.columns = 0
             self.cellSize = 0
@@ -26,7 +34,7 @@ struct GridMetrics: Equatable {
         let cellForHeight = min(maxCellSize, available.height / (rows + (rows - 1) * gapRatio))
         // Solve width = n·cell + (n-1)·gap for n; the epsilon keeps exact fits from rounding down.
         let fitting = Int(((available.width / cellForHeight + gapRatio) / (1 + gapRatio)) + 1e-6)
-        let columns = max(1, min(weekCount, fitting))
+        let columns = max(1, min(weekCount, fitting), min(weekCount, minimumColumns))
         let cellForWidth = available.width / (CGFloat(columns) + CGFloat(columns - 1) * gapRatio)
 
         self.columns = columns
@@ -108,6 +116,8 @@ struct ContributionGrid: View {
     var showsWeekdayLabels = false
     var highlightsToday = true
     var maxCellSize: CGFloat = .infinity
+    /// Show at least this many weeks, e.g. 53 for a full year, shrinking cells to fit.
+    var minimumWeeks = 0
     var gapRatio: CGFloat = 0.22
     var labelSize: CGFloat = 10
     var alignment: Alignment = .center
@@ -124,7 +134,8 @@ struct ContributionGrid: View {
                 available: CGSize(width: proxy.size.width - leadingInset, height: proxy.size.height - topInset),
                 weekCount: weeks.count,
                 gapRatio: gapRatio,
-                maxCellSize: maxCellSize
+                maxCellSize: maxCellSize,
+                minimumColumns: minimumWeeks
             )
             let visibleWeeks = Array(weeks.suffix(metrics.columns))
             // Room around the grid so today's outline isn't clipped at the edges.
