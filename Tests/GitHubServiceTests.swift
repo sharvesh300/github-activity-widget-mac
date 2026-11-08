@@ -234,10 +234,7 @@ struct CalendarTests {
 
 struct StoreTests {
     private func makeStore() -> ContributionStore {
-        let suite = "GitHubActivityTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
-        defaults.removePersistentDomain(forName: suite)
-        return ContributionStore(defaults: defaults, keychain: TokenKeychain(service: suite))
+        makeTestStore()
     }
 
     @Test func normalizesAndClearsUsername() {

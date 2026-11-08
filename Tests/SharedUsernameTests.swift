@@ -2,9 +2,74 @@ import Foundation
 import Testing
 @testable import GitHubActivity
 
+/// A store in its own temporary folder. Pass the same folder twice to act like
+/// two processes (the app and a widget) sharing one settings folder.
+func makeTestStore(in directory: URL = FileManager.default.temporaryDirectory
+    .appending(path: "GitHubActivityTests-\(UUID().uuidString)", directoryHint: .isDirectory)) -> ContributionStore {
+    ContributionStore(directory: directory, keychain: TokenKeychain(service: "GitHubActivityTests.\(UUID().uuidString)"))
+}
+
 private func makeStore() -> ContributionStore {
-    let suite = "GitHubActivityTests.\(UUID().uuidString)"
-    return ContributionStore(defaults: UserDefaults(suiteName: suite)!, keychain: TokenKeychain(service: suite))
+    makeTestStore()
+}
+
+/// Settings live in files, so a new widget (a new process) sees what was saved before.
+struct LocalStorageTests {
+    private let folder = FileManager.default.temporaryDirectory
+        .appending(path: "GitHubActivityTests-\(UUID().uuidString)", directoryHint: .isDirectory)
+
+    @Test func usernameIsRememberedByTheNextWidget() {
+        makeTestStore(in: folder).adoptUsername(fromWidgetInputs: ["sharvesh300"])
+        // A widget added later starts a fresh store on the same folder.
+        #expect(makeTestStore(in: folder).username == "sharvesh300")
+    }
+
+    @Test func appAndWidgetsSeeTheSameSettings() {
+        let app = makeTestStore(in: folder)
+        let widget = makeTestStore(in: folder)
+        app.username = "sharvesh300"
+        app.theme = .ocean
+        #expect(widget.username == "sharvesh300")
+        #expect(widget.theme == .ocean)
+    }
+
+    @Test func themeDefaultsToGitHubAndIsRemembered() {
+        #expect(makeTestStore(in: folder).theme == .github)
+        makeTestStore(in: folder).theme = .amber
+        #expect(makeTestStore(in: folder).theme == .amber)
+    }
+
+    @Test func savingOneSettingKeepsTheOthers() {
+        let store = makeTestStore(in: folder)
+        store.username = "sharvesh300"
+        store.theme = .mono
+        store.adoptUsername(fromWidgetInputs: [])
+        #expect(store.username == "sharvesh300")
+        #expect(store.theme == .mono)
+    }
+
+    @Test func cachedDataIsSharedToo() throws {
+        let app = makeTestStore(in: folder)
+        app.cache(.sample)
+        app.cacheAvatar(Data([1, 2, 3]), for: "sharvesh300")
+        let widget = makeTestStore(in: folder)
+        #expect(widget.cachedCalendar(for: "sharvesh300")?.days.count == ContributionCalendar.sample.days.count)
+        #expect(widget.cachedAvatar(for: "sharvesh300") == Data([1, 2, 3]))
+
+        widget.clearCache()
+        #expect(app.cachedCalendar(for: "sharvesh300") == nil)
+    }
+
+    @Test func unwritableFoldersAreDetected() {
+        #expect(StorageLocation.isWritable(folder))
+        #expect(!StorageLocation.isWritable(URL(fileURLWithPath: "/System/GitHubActivityTests")))
+    }
+
+    @Test func sharedFolderIsInTheRealHomeNotTheSandbox() throws {
+        let path = try #require(StorageLocation.sharedFolder).path
+        #expect(path.hasSuffix("/Library/Application Support/GitHub Activity"))
+        #expect(!path.contains("/Library/Containers/"))
+    }
 }
 
 /// One username for every widget: typing it into any widget's Edit Widget panel
@@ -91,6 +156,16 @@ struct SettingsModelTests {
         let model = makeModel()
         #expect(model.username == nil)
         #expect(model.calendar == nil)
+    }
+
+    @Test func choosingAThemeSavesItForEveryWidget() {
+        let store = makeStore()
+        let model = makeModel(store)
+        #expect(model.theme == .github)
+        model.setTheme(.ocean)
+        #expect(model.theme == .ocean)
+        #expect(store.theme == .ocean)
+        #expect(makeModel(store).theme == .ocean)
     }
 
     @Test func remembersTheSavedUsername() {
