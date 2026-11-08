@@ -1,64 +1,98 @@
+import Darwin
 import Foundation
 import Security
 
-/// Settings and the last good calendar, shared by the app and the widget.
+/// Settings, cached calendars and avatars, shared by the app and every widget.
 ///
-/// Everything lives in the App Group, so the widget sees what the app saves. If the
-/// App Group isn't available (for example an unsigned debug build) it falls back
-/// to the process's own storage, and the widget can still work on its own.
-struct ContributionStore: @unchecked Sendable {
-    // UserDefaults is thread-safe; it just isn't annotated Sendable in every SDK.
-    private let defaults: UserDefaults
-    let appGroupID: String?
+/// Everything is stored as plain files in one folder that both the app and the
+/// widget extension may use: `~/Library/Application Support/GitHub Activity`.
+/// Both targets are granted it through a home-relative sandbox exception in their
+/// entitlements, which (unlike an App Group) works whether or not the build is
+/// signed with an Apple team. If the folder can't be used, each process falls back
+/// to its own container, so widgets still remember settings between themselves.
+struct ContributionStore: Sendable {
+    /// Where this store reads and writes.
+    let directory: URL
+    /// `true` when `directory` is the folder shared by the app and the widgets.
+    let isShared: Bool
     let keychain: TokenKeychain
-
-    /// Whether the App Group container is reachable (both targets signed with the same team).
-    let isSharedWithWidget: Bool
-
-    private enum Key {
-        static let username = "username"
-        static let account = "signedInAccount"
-        static let widgetUsernameInputs = "widgetUsernameInputs"
-        static let calendarPrefix = "calendar."
-        static let avatarPrefix = "avatar."
-
-        static func calendar(_ login: String) -> String { calendarPrefix + login.lowercased() }
-        static func avatar(_ login: String) -> String { avatarPrefix + login.lowercased() }
-    }
 
     static let shared = ContributionStore()
 
     init(appGroupID: String? = Bundle.main.object(forInfoDictionaryKey: "AppGroupIdentifier") as? String) {
         let groupID = appGroupID.flatMap { $0.isEmpty || $0.hasPrefix("$(") ? nil : $0 }
-        let hasContainer = groupID.map {
-            FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: $0) != nil
-        } ?? false
-
-        self.appGroupID = groupID
-        self.isSharedWithWidget = hasContainer
-        self.defaults = (hasContainer ? groupID.flatMap(UserDefaults.init(suiteName:)) : nil) ?? .standard
-        self.keychain = TokenKeychain(accessGroup: hasContainer ? groupID : nil)
+        let location = StorageLocation.resolve()
+        self.directory = location.url
+        self.isShared = location.isShared
+        self.keychain = TokenKeychain(accessGroup: groupID)
+        migrateLegacySettings(appGroupID: groupID)
     }
 
-    /// For tests: an isolated store backed by the given defaults.
-    init(defaults: UserDefaults, keychain: TokenKeychain) {
-        self.defaults = defaults
-        self.appGroupID = nil
-        self.isSharedWithWidget = false
+    /// For tests: an isolated store in `directory`.
+    init(directory: URL, keychain: TokenKeychain) {
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        self.directory = directory
+        self.isShared = false
         self.keychain = keychain
+    }
+
+    // MARK: Settings file
+
+    /// The small settings file. Calendars and avatars live in their own files.
+    private struct Settings: Codable {
+        var username: String?
+        var theme: ContributionTheme?
+        var account: GitHubProfile?
+        /// How many widgets carry each typed username (see `adoptUsername`).
+        var widgetUsernameInputs: [String: Int] = [:]
+    }
+
+    private var settingsURL: URL { directory.appending(path: "settings.json") }
+    private var lockURL: URL { directory.appending(path: ".settings.lock") }
+    private var calendarsURL: URL { directory.appending(path: "calendars", directoryHint: .isDirectory) }
+    private var avatarsURL: URL { directory.appending(path: "avatars", directoryHint: .isDirectory) }
+
+    private func readSettings() -> Settings {
+        guard let data = try? Data(contentsOf: settingsURL),
+              let settings = try? JSONDecoder().decode(Settings.self, from: data)
+        else { return Settings() }
+        return settings
+    }
+
+    /// Read-modify-write under a file lock, so the app and several widget
+    /// processes can't overwrite each other's changes.
+    @discardableResult
+    private func updateSettings<T>(_ change: (inout Settings) -> T) -> T {
+        let descriptor = open(lockURL.path, O_CREAT | O_RDWR, 0o644)
+        if descriptor >= 0 { flock(descriptor, LOCK_EX) }
+        defer {
+            if descriptor >= 0 {
+                flock(descriptor, LOCK_UN)
+                close(descriptor)
+            }
+        }
+        var settings = readSettings()
+        let result = change(&settings)
+        if let data = try? JSONEncoder().encode(settings) {
+            try? data.write(to: settingsURL, options: .atomic)
+        }
+        return result
     }
 
     // MARK: Settings
 
+    /// The one GitHub username every widget and the app show.
     var username: String? {
-        get { defaults.string(forKey: Key.username) }
+        get { readSettings().username }
         nonmutating set {
-            if let value = newValue.flatMap(GitHubService.normalizedLogin) {
-                defaults.set(value, forKey: Key.username)
-            } else {
-                defaults.removeObject(forKey: Key.username)
-            }
+            updateSettings { $0.username = newValue.flatMap(GitHubService.normalizedLogin) }
         }
+    }
+
+    /// The theme for every widget, unless a widget picks its own in Edit Widget.
+    var theme: ContributionTheme {
+        get { readSettings().theme ?? .github }
+        nonmutating set { updateSettings { $0.theme = newValue } }
     }
 
     var token: String? { keychain.read() }
@@ -74,16 +108,8 @@ struct ContributionStore: @unchecked Sendable {
 
     /// The GitHub account the saved token belongs to, or `nil` when not signed in.
     var account: GitHubProfile? {
-        get {
-            defaults.data(forKey: Key.account).flatMap { try? JSONDecoder().decode(GitHubProfile.self, from: $0) }
-        }
-        nonmutating set {
-            if let newValue, let data = try? JSONEncoder().encode(newValue) {
-                defaults.set(data, forKey: Key.account)
-            } else {
-                defaults.removeObject(forKey: Key.account)
-            }
-        }
+        get { readSettings().account }
+        nonmutating set { updateSettings { $0.account = newValue } }
     }
 
     // MARK: One username for every widget
@@ -104,24 +130,28 @@ struct ContributionStore: @unchecked Sendable {
         for login in inputs.compactMap(GitHubService.normalizedLogin) {
             current[login.lowercased(), default: 0] += 1
         }
-        let previous = defaults.dictionary(forKey: Key.widgetUsernameInputs) as? [String: Int] ?? [:]
-        defaults.set(current, forKey: Key.widgetUsernameInputs)
+        return updateSettings { settings in
+            let previous = settings.widgetUsernameInputs
+            settings.widgetUsernameInputs = current
 
-        let justEntered = current.filter { $0.value > previous[$0.key, default: 0] }.keys
-        guard !justEntered.isEmpty else { return false }
-        // Several at once (e.g. the first run with many widgets): keep the current
-        // username if it's one of them, otherwise pick one predictably.
-        if let username, justEntered.contains(username.lowercased()) { return false }
-        guard let chosen = justEntered.sorted().first else { return false }
-        username = chosen
-        return true
+            let justEntered = current.filter { $0.value > previous[$0.key, default: 0] }.keys
+            guard !justEntered.isEmpty else { return false }
+            // Several at once (e.g. the first run with many widgets): keep the current
+            // username if it's one of them, otherwise pick one predictably.
+            if let username = settings.username, justEntered.contains(username.lowercased()) { return false }
+            guard let chosen = justEntered.sorted().first else { return false }
+            settings.username = chosen
+            return true
+        }
     }
 
     /// Forgets the account, token, username and cached data.
     func signOut() {
         keychain.delete()
-        account = nil
-        username = nil
+        updateSettings {
+            $0.account = nil
+            $0.username = nil
+        }
         clearCache()
     }
 
@@ -132,45 +162,58 @@ struct ContributionStore: @unchecked Sendable {
         username.flatMap(cachedCalendar(for:))
     }
 
-    /// The last good calendar for `login`. Kept per user, so a widget set to
-    /// someone else doesn't overwrite the app's own copy.
+    /// The last good calendar for `login`. Kept per user, so switching back and
+    /// forth between people doesn't throw data away.
     func cachedCalendar(for login: String) -> ContributionCalendar? {
-        guard let data = defaults.data(forKey: Key.calendar(login)) else { return nil }
+        guard let data = try? Data(contentsOf: calendarFile(login)) else { return nil }
         return try? JSONDecoder().decode(ContributionCalendar.self, from: data)
     }
 
     func cache(_ calendar: ContributionCalendar) {
         guard let data = try? JSONEncoder().encode(calendar) else { return }
-        defaults.set(data, forKey: Key.calendar(calendar.profile.login))
+        try? FileManager.default.createDirectory(at: calendarsURL, withIntermediateDirectories: true)
+        try? data.write(to: calendarFile(calendar.profile.login), options: .atomic)
     }
 
     /// Removes every cached calendar and avatar.
     func clearCache() {
-        for key in defaults.dictionaryRepresentation().keys
-        where key.hasPrefix(Key.calendarPrefix) || key.hasPrefix(Key.avatarPrefix) {
-            defaults.removeObject(forKey: key)
-        }
+        try? FileManager.default.removeItem(at: calendarsURL)
+        try? FileManager.default.removeItem(at: avatarsURL)
+    }
+
+    private func calendarFile(_ login: String) -> URL {
+        calendarsURL.appending(path: "\(login.lowercased()).json")
     }
 
     // MARK: Avatars
 
-    private struct CachedAvatar: Codable {
-        let data: Data
-        let fetchedAt: Date
-    }
-
     /// The avatar's image data, if it was downloaded within the last week.
     func cachedAvatar(for login: String, maxAge: TimeInterval = 7 * 24 * 3600) -> Data? {
-        guard let stored = defaults.data(forKey: Key.avatar(login)),
-              let avatar = try? JSONDecoder().decode(CachedAvatar.self, from: stored),
-              -avatar.fetchedAt.timeIntervalSinceNow < maxAge
+        let file = avatarFile(login)
+        guard let modified = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.modificationDate] as? Date,
+              -modified.timeIntervalSinceNow < maxAge
         else { return nil }
-        return avatar.data
+        return try? Data(contentsOf: file)
     }
 
     func cacheAvatar(_ data: Data, for login: String) {
-        guard let encoded = try? JSONEncoder().encode(CachedAvatar(data: data, fetchedAt: .now)) else { return }
-        defaults.set(encoded, forKey: Key.avatar(login))
+        try? FileManager.default.createDirectory(at: avatarsURL, withIntermediateDirectories: true)
+        try? data.write(to: avatarFile(login), options: .atomic)
+    }
+
+    private func avatarFile(_ login: String) -> URL {
+        avatarsURL.appending(path: "\(login.lowercased()).img")
+    }
+
+    // MARK: Migration
+
+    /// Earlier versions kept the username in UserDefaults (the App Group suite,
+    /// which unsigned widgets can't open). Copy it over once.
+    private func migrateLegacySettings(appGroupID: String?) {
+        guard readSettings().username == nil else { return }
+        let suites = [appGroupID.flatMap(UserDefaults.init(suiteName:)), UserDefaults.standard].compactMap { $0 }
+        guard let legacy = suites.lazy.compactMap({ $0.string(forKey: "username") }).first else { return }
+        username = legacy
     }
 
     // MARK: Loading
@@ -296,5 +339,44 @@ struct KeychainError: LocalizedError {
     var errorDescription: String? {
         let message = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
         return "Couldn't save the token to your Keychain. \(message)"
+    }
+}
+
+// MARK: - Storage location
+
+enum StorageLocation {
+    static let folderName = "GitHub Activity"
+
+    /// `~/Library/Application Support/GitHub Activity` in the real home folder, not
+    /// inside a sandbox container. Both targets' entitlements allow this exact path.
+    static var sharedFolder: URL? {
+        guard let entry = getpwuid(getuid()), let home = entry.pointee.pw_dir else { return nil }
+        return URL(fileURLWithPath: String(cString: home), isDirectory: true)
+            .appending(path: "Library/Application Support/\(folderName)", directoryHint: .isDirectory)
+    }
+
+    /// The shared folder if this process can write to it, otherwise its own container.
+    static func resolve() -> (url: URL, isShared: Bool) {
+        if let shared = sharedFolder, isWritable(shared) {
+            return (shared, true)
+        }
+        let own = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appending(path: folderName, directoryHint: .isDirectory)
+        _ = isWritable(own)
+        return (own, false)
+    }
+
+    /// Creates the folder and proves we can write into it. (Checking the path alone
+    /// isn't enough: the sandbox may still refuse access.)
+    static func isWritable(_ folder: URL) -> Bool {
+        let probe = folder.appending(path: ".write-test-\(UUID().uuidString)")
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data().write(to: probe)
+            try FileManager.default.removeItem(at: probe)
+            return true
+        } catch {
+            return false
+        }
     }
 }
