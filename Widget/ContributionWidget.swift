@@ -39,14 +39,15 @@ struct ContributionProvider: AppIntentTimelineProvider {
     func snapshot(for configuration: ContributionWidgetIntent, in context: Context) async -> ContributionEntry {
         // The widget gallery wants something instantly: use the cache, or the sample.
         let store = ContributionStore.shared
+        let theme = Self.theme(for: configuration, store: store)
         guard let login = store.username, let cached = store.cachedCalendar(for: login) else {
-            return .sample(theme: configuration.theme)
+            return .sample(theme: theme)
         }
         return ContributionEntry(
             date: .now,
             content: .loaded(cached, error: nil),
             avatar: store.cachedAvatar(for: login),
-            theme: configuration.theme
+            theme: theme
         )
     }
 
@@ -63,10 +64,11 @@ struct ContributionProvider: AppIntentTimelineProvider {
     private func makeEntry(for configuration: ContributionWidgetIntent) async -> ContributionEntry {
         let store = ContributionStore.shared
         await adoptUsernameTypedIntoAnyWidget(configuration, store: store)
+        let theme = Self.theme(for: configuration, store: store)
 
         // Every widget shows the one shared username.
         guard let login = store.username else {
-            return ContributionEntry(date: .now, content: .needsUsername, avatar: nil, theme: configuration.theme)
+            return ContributionEntry(date: .now, content: .needsUsername, avatar: nil, theme: theme)
         }
 
         let result = await store.loadCalendar(username: login, reuseIfNewerThan: Self.reuseWindow)
@@ -81,7 +83,16 @@ struct ContributionProvider: AppIntentTimelineProvider {
             avatar = await loadAvatar(for: profile, store: store)
         }
 
-        return ContributionEntry(date: .now, content: content, avatar: avatar, theme: configuration.theme)
+        return ContributionEntry(date: .now, content: content, avatar: avatar, theme: theme)
+    }
+
+    /// A theme picked for this widget in Edit Widget wins; otherwise the app's theme.
+    ///
+    /// Builds without an Apple team ID can't decode the widget's own Theme choice
+    /// (App Intents needs the team ID to look up the option), so it arrives empty
+    /// there and the app's theme is used instead.
+    private static func theme(for configuration: ContributionWidgetIntent, store: ContributionStore) -> ContributionTheme {
+        configuration.theme ?? store.theme
     }
 
     /// If someone just typed a username into any widget's Edit Widget panel, make it

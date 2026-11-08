@@ -6,8 +6,9 @@ struct ContributionWidgetIntent: WidgetConfigurationIntent {
     static let title: LocalizedStringResource = "GitHub Activity"
     static let description = IntentDescription("Show a GitHub contribution graph on your desktop.")
 
-    @Parameter(title: "Theme", default: .github)
-    var theme: ContributionTheme
+    /// Empty means "use the theme chosen in the app", which every widget shares.
+    @Parameter(title: "Theme", description: "Leave empty to use the theme chosen in the GitHub Activity app.")
+    var theme: ContributionTheme?
 
     /// Typing a username here sets it for every GitHub Activity widget (and the app),
     /// and it's remembered until someone enters a different one.
@@ -19,7 +20,7 @@ struct ContributionWidgetIntent: WidgetConfigurationIntent {
 
     init() {}
 
-    init(theme: ContributionTheme, username: String? = nil) {
+    init(theme: ContributionTheme?, username: String? = nil) {
         self.theme = theme
         self.username = username
     }
@@ -44,15 +45,14 @@ struct RefreshContributionsIntent: AppIntent {
     }
 }
 
+// App Intents reads these as constants, so they're `static let`, not computed.
 extension ContributionTheme: AppEnum {
-    static var typeDisplayRepresentation: TypeDisplayRepresentation { "Theme" }
+    static let typeDisplayRepresentation: TypeDisplayRepresentation = "Theme"
 
-    static var caseDisplayRepresentations: [ContributionTheme: DisplayRepresentation] {
-        [
-            .github: "GitHub",
-            .ocean: "Ocean",
-            .amber: "Amber",
-            .mono: "Mono",
-        ]
-    }
+    static let caseDisplayRepresentations: [ContributionTheme: DisplayRepresentation] = [
+        .github: "GitHub",
+        .ocean: "Ocean",
+        .amber: "Amber",
+        .mono: "Mono",
+    ]
 }

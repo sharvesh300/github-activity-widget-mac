@@ -12,6 +12,7 @@ struct SettingsView: View {
             if let username = model.username, !isEditing {
                 profileSection(username)
                 activitySection
+                themeSection
             } else {
                 usernameSection
             }
@@ -25,7 +26,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 460)
-        .frame(minHeight: 500, idealHeight: 560, maxHeight: 900)
+        .frame(minHeight: 660, idealHeight: 660, maxHeight: 900)
         .animation(.snappy, value: model.username)
         .animation(.snappy, value: isEditing)
         .task { await model.refreshIfStale() }
@@ -117,7 +118,7 @@ struct SettingsView: View {
                     Text("contributions in the last year")
                         .foregroundStyle(.secondary)
                 }
-                ContributionGrid(weeks: calendar.weeks, showsMonthLabels: true, alignment: .topLeading)
+                ContributionGrid(weeks: calendar.weeks, theme: model.theme, showsMonthLabels: true, alignment: .topLeading)
                     .frame(height: 96)
                 HStack {
                     StatView(value: stats.currentStreak, unit: "day", label: "Current streak")
@@ -161,6 +162,32 @@ struct SettingsView: View {
                 }
                 Text("To add the widget, right-click your desktop and choose Edit Widgets.")
             }
+        }
+    }
+}
+
+// MARK: - Theme
+
+extension SettingsView {
+    fileprivate var themeSection: some View {
+        Section {
+            Picker("Theme", selection: Binding(get: { model.theme }, set: { model.setTheme($0) })) {
+                ForEach(ContributionTheme.allCases) { theme in
+                    Text(theme.displayName).tag(theme)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            HStack {
+                Text("Preview")
+                    .foregroundStyle(.secondary)
+                Spacer()
+                ContributionLegend(theme: model.theme, cellSize: 12, labelSize: 11)
+            }
+        } header: {
+            Text("Widget theme")
+        } footer: {
+            Text("Used by every GitHub Activity widget. Saved on this Mac until you change it.")
         }
     }
 }

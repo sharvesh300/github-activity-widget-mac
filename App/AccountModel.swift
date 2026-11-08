@@ -12,6 +12,8 @@ final class AccountModel {
     /// The shared username, or `nil` until someone enters one here or in a widget.
     private(set) var username: String?
     private(set) var calendar: ContributionCalendar?
+    /// The theme every widget uses unless one picks its own.
+    private(set) var theme: ContributionTheme
     private(set) var isRefreshing = false
     /// The last problem worth showing, cleared when something succeeds.
     private(set) var errorMessage: String?
@@ -27,6 +29,15 @@ final class AccountModel {
         self.service = service
         self.username = store.username
         self.calendar = store.cachedCalendar
+        self.theme = store.theme
+    }
+
+    /// Saves the theme for every widget and redraws them.
+    func setTheme(_ newTheme: ContributionTheme) {
+        guard newTheme != theme else { return }
+        theme = newTheme
+        store.theme = newTheme
+        WidgetCenter.shared.reloadAllTimelines()
     }
 
     /// Saves `input` as the username for the app and every widget.
