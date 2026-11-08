@@ -289,8 +289,8 @@ See the note in [Install](#install). You only have to allow it once.
 **You need:** a Mac with macOS 14 or later and **Xcode 27 or later**. The project uses Xcode 27's project format.
 
 ```bash
-git clone https://github.com/sharvesh300/github_contribution_widget.git
-cd github_contribution_widget
+git clone https://github.com/sharvesh300/github-activity-widget-mac.git
+cd github-activity-widget-mac
 open github_contribution_widget.xcodeproj
 ```
 
@@ -331,7 +331,7 @@ spctl -a -vvv -t install build/GitHubActivity-1.0.dmg
 ### Project structure
 
 ```
-github_contribution_widget/
+github-activity-widget-mac/
 ├── App/                     The macOS app (settings window)
 │   ├── GitHubActivityApp.swift
 │   ├── SettingsView.swift   Username entry, preview, change username
@@ -359,3 +359,7 @@ github_contribution_widget/
 - **Timeline:** macOS's WidgetKit asks the widget for a new timeline about every 30 minutes. The widget fetches the public contributions page, parses it into days and weeks, saves the result, and returns a single snapshot that macOS draws on the desktop.
 - **Refresh button:** the ↻ button runs an App Intent that fetches fresh data. WidgetKit then reloads the timeline, which reuses that data instead of fetching twice.
 - **Shared username:** a username typed into any widget's Edit Widget panel becomes the shared username, because the widget remembers which entries it has already seen and only applies a new one. Older entries left in other widgets never switch it back.
+
+## License
+
+Released under the [MIT License](LICENSE).
