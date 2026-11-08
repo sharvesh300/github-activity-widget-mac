@@ -87,7 +87,7 @@ When you open the app for the first time, it asks for a GitHub username.
 
 ### Step 2: Check the preview
 
-The app loads that person's contributions and shows a preview of what the widget will show.
+The app loads that person's contributions and shows a preview of what the widget will show. Below it you can pick the widget theme (see [Step 4](#step-4-choose-a-theme)).
 
 <p align="center">
   <img src="docs/images/app-profile.png" width="460" alt="The GitHub Activity window showing @sharvesh300 with 1,302 contributions, the contribution graph and streak stats">
@@ -104,18 +104,19 @@ The app loads that person's contributions and shows a preview of what the widget
 4. Pick a size (small, medium, large or extra large) and **drag it onto your desktop**, or click it to add it.
 5. Click **Done**.
 
-The widget shows the username you saved in Step 1 straight away. You can add as many widgets as you like, in any sizes.
+The widget shows the username you saved in Step 1 straight away, and so does every widget you add later: the username is saved on your Mac, so new widgets never ask for it again. You can add as many widgets as you like, in any sizes.
 
 > [!TIP]
 > You can also put the widget in **Notification Center**: click the date and time in the menu bar, scroll to the bottom and click **Edit Widgets…**
 
 ### Step 4: Choose a theme
 
-1. **Right-click** the widget and choose **Edit "GitHub Activity"**.
-2. Pick a **Theme**: GitHub, Ocean, Amber or Mono.
-3. Click outside the panel to close it.
+In the GitHub Activity app, pick a **Widget theme**: GitHub, Ocean, Amber or Mono. The preview in the app changes straight away, and every widget on your desktop switches within a few seconds. The theme is saved on your Mac, so widgets you add later use it too.
 
-Each widget can have its own theme, so you could have a green one and a blue one side by side.
+**Want one widget to look different?** Right-click it, choose **Edit "GitHub Activity"**, and pick a **Theme** just for that widget. Leave it empty to follow the app's theme.
+
+> [!NOTE]
+> Choosing a theme for a single widget needs a release build signed with an Apple Developer ID. In other builds (for example one you built yourself without a signing team), macOS can't pass that choice to the widget, so use the theme in the app instead.
 
 ### Step 5: Change the username later
 
@@ -174,7 +175,7 @@ The full year, exactly like a GitHub profile, with all five stats underneath.
 | **Amber** | Warm yellows and oranges |
 | **Mono** | Greys, for a minimal desktop |
 
-Every theme has a dark and a light version and follows your Mac's appearance (System Settings › Appearance).
+Choose the theme in the app ([Step 4](#step-4-choose-a-theme)). Every theme has a dark and a light version and follows your Mac's appearance (System Settings › Appearance).
 
 When windows cover your desktop, macOS shows widgets in a dimmed, single-colour style. GitHub Activity switches to shades of one colour then, so the graph stays readable. You can control this under **System Settings › Desktop & Dock › Widgets**.
 
@@ -242,6 +243,18 @@ GitHub's contributions page can be slow, especially on the first request. Wait a
 </details>
 
 <details>
+<summary><b>Changing the theme in Edit Widget doesn't do anything</b></summary>
+
+Pick the theme in the GitHub Activity app instead: it applies to every widget. A theme for a single widget only works in release builds signed with an Apple Developer ID (see [Step 4](#step-4-choose-a-theme)).
+</details>
+
+<details>
+<summary><b>A new widget asks for the username again</b></summary>
+
+The username and theme are saved in `~/Library/Application Support/GitHub Activity`. Open the GitHub Activity app once: it shows the saved username, or lets you enter it again, and every widget then picks it up.
+</details>
+
+<details>
 <summary><b>The widget isn't updating</b></summary>
 
 Click **↻**. macOS limits how often widgets can refresh, so automatic updates can be delayed, especially on battery or after waking from sleep. Opening the app also refreshes the data, and every widget with it, if it's more than 10 minutes old.
@@ -259,13 +272,13 @@ See the note in [Install](#install). You only have to allow it once.
 - The app talks only to GitHub:
   - `https://github.com/users/<username>/contributions`, the public contributions page.
   - `https://github.com/<username>.png`, the public avatar.
-- The username, the last downloaded data and the avatar are stored **only on your Mac**, in the app's own storage.
+- The username, theme, last downloaded data and avatar are stored **only on your Mac**, in `~/Library/Application Support/GitHub Activity`.
 
 ## Uninstall
 
 1. Remove the widgets: right-click each one and choose **Remove Widget**.
 2. Quit GitHub Activity, then drag it from **Applications** to the **Trash**.
-3. *Optional:* to also delete the saved username and data, open Finder, choose **Go › Go to Folder…** (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>G</kbd>), enter `~/Library/Group Containers`, and move any folder whose name contains `com.sharvesh300.GitHubActivity` to the Trash.
+3. *Optional:* to also delete the saved username, theme and data, open Finder, choose **Go › Go to Folder…** (<kbd>⇧</kbd> <kbd>⌘</kbd> <kbd>G</kbd>), enter `~/Library/Application Support`, and move the **GitHub Activity** folder to the Trash.
 
 ---
 
@@ -331,7 +344,7 @@ github_contribution_widget/
 ├── Shared/                  Compiled into both the app and the widget
 │   ├── ContributionModels.swift   Days, weeks, streaks and stats
 │   ├── GitHubService.swift        Fetching and parsing GitHub data, with retries
-│   ├── ContributionStore.swift    Shared username, cache, avatars
+│   ├── ContributionStore.swift    Shared username, theme, cache and avatars (files)
 │   ├── ContributionGrid.swift     The heatmap view and legend
 │   └── Theme.swift                Colour themes
 ├── Tests/                   Unit tests (Swift Testing)
@@ -342,7 +355,7 @@ github_contribution_widget/
 
 ### How it works
 
-- **App and widget:** the app embeds the widget extension. They share the username and the cached data through an **App Group**, so a username saved in one shows up in the other.
+- **App and widget:** the app embeds the widget extension. They share the username, theme and cached data as plain files in `~/Library/Application Support/GitHub Activity`, which both are allowed to use through a home-relative sandbox exception in their entitlements. Unlike an App Group, this works whether or not the build is signed with an Apple team.
 - **Timeline:** macOS's WidgetKit asks the widget for a new timeline about every 30 minutes. The widget fetches the public contributions page, parses it into days and weeks, saves the result, and returns a single snapshot that macOS draws on the desktop.
 - **Refresh button:** the ↻ button runs an App Intent that fetches fresh data. WidgetKit then reloads the timeline, which reuses that data instead of fetching twice.
 - **Shared username:** a username typed into any widget's Edit Widget panel becomes the shared username, because the widget remembers which entries it has already seen and only applies a new one. Older entries left in other widgets never switch it back.
